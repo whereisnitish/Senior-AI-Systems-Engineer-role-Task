@@ -40,5 +40,5 @@ The Qwen row is an estimate: its token counts come from the non-reasoning runs, 
 3. Add a customer and thread lookup, PII redaction, a knowledge base for each brand behind the auto-reply intents, and Hindi or Hinglish rule patterns.
 
 ## AI tools used
-- **Claude Code (Claude Opus 5.5):** read the brief and data and proposed the plan (which I reviewed and changed: OpenRouter, Python, a command-line tool, and Qwen 3.8 27B as the only model). It wrote `triage.py`, the README and the first draft of this log, built the malformed inputs and the mock-API test, and ran the tool. I reviewed the outputs and edited this log.
+- **Claude Code (Claude Opus 5.5):** read the brief and data and proposed the plan (which I reviewed and changed: OpenRouter, Python, a command-line tool, and Qwen 3.8 27B as the only model). It wrote the README and the first draft of this log, built the malformed inputs and the mock-API test, and ran the tool. I reviewed the outputs and edited this log.
 - **At runtime:** whichever LLM is configured (see README, *Choosing the LLM*). The default is `qwen/qwen3.8-27b:free` on OpenRouter; Claude uses Anthropic's official SDK. During development I also tried Gemma 4 31B and Nemotron 3 Super / 3.5 Lightning (free tiers).
