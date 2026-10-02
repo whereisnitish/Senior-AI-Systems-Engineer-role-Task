@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import concurrent.futures as cf
 
-from services.llm_client import LLMError, OpenRouterClient
+from services.llm import BaseLLMClient, LLMError
 from services.policy import apply_policy
 from utils.cache import Cache
 from utils.llm_output import merge_entities, parse_json_object, validate_llm
@@ -11,7 +11,7 @@ from utils.prompts import PROMPT_VERSION, REPAIR_PROMPT, SYSTEM_PROMPT, build_us
 from utils.rules import is_contact_only, keyword_intents, regex_entities, rule_flags
 
 
-def triage_one(rec: dict, client: OpenRouterClient | None, cache: Cache) -> dict:
+def triage_one(rec: dict, client: BaseLLMClient | None, cache: Cache) -> dict:
     text = rec["text"]
     rx = regex_entities(text) if text else {}
     rec["input_flags"] |= rule_flags(text) if text else {"empty_message"}
@@ -35,7 +35,7 @@ def triage_one(rec: dict, client: OpenRouterClient | None, cache: Cache) -> dict
         analysis = None
         if client:
             user_msg = build_user_message(rec)
-            ckey = cache.key(PROMPT_VERSION, client.model, client.reasoning, rec["brand"] or "", user_msg)
+            ckey = cache.key(PROMPT_VERSION, client.provider, client.model, client.reasoning, rec["brand"] or "", user_msg)
             cached = cache.get(ckey)
             try:
                 if cached:
@@ -95,7 +95,7 @@ def safe_triage(rec, client, cache):
                 "primary_queue": "general_triage", "processing": {"mode": "error", "issues": [repr(e)]}}
 
 
-def run_batch(records: list, client: OpenRouterClient | None, cache: Cache, workers: int = 2,
+def run_batch(records: list, client: BaseLLMClient | None, cache: Cache, workers: int = 2,
               on_result=None) -> list:
     """Triage every record concurrently; results keep input order. on_result(done, total, result) is optional."""
     results = [None] * len(records)

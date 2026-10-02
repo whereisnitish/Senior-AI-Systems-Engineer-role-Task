@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 
-from utils.config import PRICE_IN, PRICE_OUT, PRICED_MODEL
+from utils.providers import price_for
 from utils.taxonomy import HARD_FLAGS
 
 
@@ -32,8 +32,22 @@ def print_summary(results: list, elapsed: float):
     print(f"\n{n} messages in {elapsed:.1f}s | modes: {modes} | needs_human: "
           f"{sum(1 for r in results if r.get('needs_human'))}/{n}", file=sys.stderr)
     if llm_n:
-        per_msg = (tin * PRICE_IN + tout * PRICE_OUT) / llm_n
         print(f"tokens: {tin} in / {tout} out over {llm_n} LLM calls "
               f"(avg {tin / llm_n:.0f} in, {tout / llm_n:.0f} out)", file=sys.stderr)
-        print(f"projected cost at paid {PRICED_MODEL} pricing: ${per_msg * 1000:.4f} per 1,000 messages, "
+    # one cost line per model actually used (normally just one)
+    by_model = {}
+    for r in results:
+        p = r.get("processing", {})
+        if p.get("tokens_in"):
+            t = by_model.setdefault(p.get("model"), [0, 0, 0])
+            t[0] += p.get("tokens_in", 0); t[1] += p.get("tokens_out", 0); t[2] += 1
+    for model, (m_in, m_out, calls) in by_model.items():
+        label = model[:-5] if model and model.endswith(":free") else model
+        price = price_for(model)
+        if price is None:
+            print(f"no price on file for {label}; set LLM_PRICE_IN and LLM_PRICE_OUT (USD per 1M tokens) "
+                  f"to project cost", file=sys.stderr)
+            continue
+        per_msg = (m_in * price[0] + m_out * price[1]) / calls
+        print(f"projected cost at paid {label} pricing: ${per_msg * 1000:.4f} per 1,000 messages, "
               f"${per_msg * 10000 * 30:.2f}/month at 10k/day", file=sys.stderr)

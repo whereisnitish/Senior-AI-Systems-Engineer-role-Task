@@ -10,12 +10,12 @@ The decision log is in [DECISION_LOG.md](DECISION_LOG.md).
 
 ## Run it
 
-Requires Python 3.9+. It uses **only the standard library**, so there is nothing to `pip install`.
-The model is `qwen/qwen3.8-27b:free` on OpenRouter. The tool only ever calls this one model and never falls back to another.
+Requires Python 3.9+. The tool uses **only the standard library**, so there is nothing to `pip install`.
+The one exception is Claude, which goes through Anthropic's official SDK: `pip install anthropic` (Python 3.10+).
 
 ```bash
-# 1. API key: put this in .env next to triage.py (or export it)
-OPENROUTER_API_KEY=sk-or-...
+# 1. Put ONE API key in .env next to triage.py (or export it). The tool picks the provider from it.
+OPENROUTER_API_KEY=sk-or-...        # or OPENAI_API_KEY=... / ANTHROPIC_API_KEY=... / GROQ_API_KEY=... / GEMINI_API_KEY=...
 
 # 2. Run
 python triage.py messages.json -o results.json
@@ -24,14 +24,44 @@ python triage.py messages.json -o results.json
 python triage.py messages.json --rules-only
 ```
 
-A per-message table, the token usage and a projected cost are printed to stderr. Full results go to `results.json`.
+The first line of output says which provider and model were chosen, and why. A per-message table, the token usage and a projected cost follow on stderr. Full results go to `results.json`.
 
-**Free-tier note:** an OpenRouter account without credits gets **50 free-model requests a day**. One full run of this file uses about 23 requests, plus any retries. When the quota runs out, the tool stops calling the API straight away (no retry storm), and the remaining messages go to rules-only mode, flagged `llm_unavailable`. Results are cached in `.triage_cache/`, so the next run only calls the model for messages not yet classified.
+### Choosing the LLM
+
+Any of these works. The tool picks one in this order:
+
+1. `--provider NAME`, or `LLM_PROVIDER=NAME`
+2. `LLM_BASE_URL` set (and no provider named): any **OpenAI-compatible** endpoint
+3. the first API key it finds: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`
+4. nothing set: rules-only, with a warning
+
+| Provider | Key | Default model | Notes |
+|---|---|---|---|
+| `openrouter` | `OPENROUTER_API_KEY` | `qwen/qwen3.8-27b:free` | Any OpenRouter model id works with `--model` |
+| `openai` | `OPENAI_API_KEY` | `gpt-6-luna` | Uses `max_completion_tokens` and `reasoning_effort`; no `temperature` |
+| `anthropic` (Claude) | `ANTHROPIC_API_KEY` | `claude-opus-5` | Needs `pip install anthropic`. Cheaper: `--model claude-sonnet-5` or `claude-haiku-4-5` |
+| `groq` | `GROQ_API_KEY` | none, set `--model` | |
+| `gemini` | `GEMINI_API_KEY` | none, set `--model` | Google's OpenAI-compatible endpoint |
+| `ollama` | none | none, set `--model` | Local models at `http://localhost:11434/v1` |
+| `openai-compatible` | `LLM_API_KEY` (optional) | none, set `--model` | vLLM, LM Studio, Together, a proxy, ...: set `LLM_BASE_URL` to its `/v1` base |
+
+```bash
+python triage.py --provider anthropic                          # Claude, default model
+python triage.py --provider openai --model gpt-6-sol           # a different OpenAI model
+LLM_BASE_URL=http://localhost:8000/v1 LLM_MODEL=my-model python triage.py   # your own server
+```
+
+Other settings: `LLM_MODEL` (default model for any provider; `TRIAGE_MODEL` also still works), `LLM_API_KEY` (overrides the provider's key variable), `LLM_BASE_URL` (overrides the provider's URL), `ANTHROPIC_BASE_URL` (Claude through a proxy). `LLM_PRICE_IN` / `LLM_PRICE_OUT` set USD per 1M tokens for the cost projection when a model isn't in the built-in price list.
+
+**Endpoints differ in which options they accept.** When a request is rejected for naming one (JSON mode, `temperature`, reasoning effort, `max_tokens` vs `max_completion_tokens`, Claude's `effort`), the client drops or renames it, remembers that for the rest of the run, and retries. A bad key, an unknown model, or exhausted credit stops LLM calls for the rest of the run, and the remaining messages go to a human. They don't each wait through retries.
+
+**Free-tier note (OpenRouter):** an account without credits gets **50 free-model requests a day**. One full run of this file uses about 23 requests, plus any retries. When the quota runs out, the tool stops calling the API straight away (no retry storm), and the remaining messages go to rules-only mode, flagged `llm_unavailable`. Results are cached in `.triage_cache/` (keyed by provider, model and message), so the next run only calls the model for messages not yet classified.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `--model` | `qwen/qwen3.8-27b:free` | OpenRouter model id (or set `TRIAGE_MODEL`) |
-| `--reasoning` | `off` | Model thinking. `off` sends `reasoning.enabled=false`; `low`/`medium`/`high` set an effort level |
+| `--provider` | auto | See above |
+| `--model` | provider default | Model id for that provider |
+| `--reasoning` | `off` | Model thinking. `off` = least reasoning the provider allows (OpenRouter `reasoning.enabled=false`, OpenAI `reasoning_effort=low`, Claude `effort=low`); `low`/`medium`/`high` set an effort level |
 | `--max-tokens` | 8000 | Output budget, including any reasoning tokens |
 | `--workers` | 2 | Concurrent LLM calls |
 | `--min-interval` | 3.0 | Minimum seconds between requests (free tier allows about 20 per minute) |
@@ -44,12 +74,19 @@ Input can be a JSON array, a `{"messages": [...]}` object, or JSON Lines. `sampl
 ## Tests (no API key needed)
 
 ```bash
-python tests/test_llm_mock.py                          # LLM path against a local mock OpenRouter
+python tests/test_llm_mock.py                          # LLM path against a local mock server, every protocol
 python triage.py samples/edge_cases.json --rules-only  # malformed records
 python triage.py samples/broken.jsonl --rules-only     # broken JSON Lines
 ```
 
-The mock returns a deliberately **wrong** label (`order_status`) and a made-up booking ref for every message. The test checks that the code still sends the injection (005), the health question (019) and the stranded traveller (016) to the right humans, and drops the made-up entity. It also covers the free endpoint rejecting `response_format`, the daily quota running out (stops after 1 request instead of backing off), and output cut off at `max_tokens`. The API URL can be overridden with `OPENROUTER_URL`.
+The mock returns a deliberately **wrong** label (`order_status`) and a made-up booking ref for every message. The test checks that the code still sends the injection (005), the health question (019) and the stranded traveller (016) to the right humans, and drops the made-up entity. It also covers:
+- **provider selection:** which provider wins when several keys are set, and the config errors;
+- **OpenRouter:** the free endpoint rejecting `response_format`, the daily quota running out (stops after 1 request instead of backing off), and output cut off at `max_tokens`;
+- **OpenAI:** `max_completion_tokens`, no `temperature`, and `reasoning_effort`;
+- **a strict OpenAI-compatible endpoint:** one that rejects `temperature` and `max_tokens`, which the client adapts to;
+- **Claude, through the real SDK:** system prompt placement, `effort`, caching, usage counts, a `refusal` going to a human, and a model without `effort` support.
+
+The Claude checks run only when `anthropic` is installed and are skipped otherwise.
 
 ## How it works
 
@@ -63,7 +100,7 @@ normalise ─▶ pre-checks ─▶ LLM (label + extract) ─▶ validate ─▶ 
 
 1. **Normalise.** Any element of the file (a string, a number, null, a list, missing fields) becomes a record. Missing IDs are generated and duplicates get a suffix. Bad timestamps, unknown brands and unknown channels are flagged, not rejected. Control and zero-width characters are stripped, and text is truncated at 4,000 characters.
 2. **Pre-checks (deterministic).** Empty text and contact-only messages ("+91 98765 43210") never reach the LLM. Regexes catch prompt-injection phrasing, payment-redirect and invoice patterns, chargeback and legal threats, repeat contact, urgent travel disruption, vulnerable customers, health questions and missing attachments. They also extract IDs, phones, emails and amounts.
-3. **LLM.** It classifies into a fixed set of intent labels and extracts entities as JSON. The message is passed inside `<customer_message>` tags as untrusted data. The model **only labels**: it has no tools, and nothing it writes is executed.
+3. **LLM** (any provider, see *Choosing the LLM*). It classifies into a fixed set of intent labels and extracts entities as JSON. The message is passed inside `<customer_message>` tags as untrusted data. The model **only labels**: it has no tools, and nothing it writes is executed.
 4. **Validate.** The output is coerced to the schema. Unknown labels become `other`. Any order ID, booking ref, phone or amount the model returns that is **not literally in the message is dropped** and lowers confidence. Unparseable output gets one repair retry, then falls back to rules.
 5. **Policy (code, not the model).** A table maps each intent to its handler queue, next action, priority and whether it is *automation-eligible*. Only reversible, non-financial, non-advice actions are eligible: order-status lookup, opening hours, price list, booking link, thank-you, marketing unsubscribe, and auto-acknowledging a job application.
 
@@ -115,9 +152,14 @@ triage.py                    command-line entry point: arguments, wiring, output
 services/
   triage_service.py          per-message pipeline and the concurrent batch runner
   policy.py                  business rules: route, priority, confidence, needs_human
-  llm_client.py              OpenRouter client: retries, circuit breaker, quota and JSON-mode handling
+  llm/
+    factory.py               picks the provider (--provider / env / whichever key is set) and builds its client
+    base.py                  shared: pacing, circuit breaker, stop-for-run on fatal errors, learning rejected params
+    openai_compatible.py     OpenAI protocol (OpenAI, OpenRouter, Groq, Gemini, Ollama, any /v1 URL), stdlib only
+    anthropic_client.py      Claude via the official anthropic SDK (optional dependency)
 utils/
-  config.py                  model, endpoint, pricing, thresholds
+  config.py                  thresholds and limits
+  providers.py               provider presets, auto-detect order, per-model prices
   taxonomy.py                brands, intents, risk flags, the policy table (data)
   prompts.py                 system prompt and how a message is wrapped as untrusted data
   rules.py                   regex pre-checks, entity extraction, keyword fallback classifier
